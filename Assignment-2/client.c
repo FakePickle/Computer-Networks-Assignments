@@ -1,30 +1,29 @@
 #include "utils.h"
 
-// Function to handle single connection to the server
-void connect_to_server() {
+// Function for client thread (used when multiple clients are requested)
+void *client_thread(void *arg) {
     int client_socket;
     struct sockaddr_in server_address;
     char buffer[MAX_BUFFER_SIZE];
     int server_port = SERVER_PORT;
-    char *server_ip = "127.0.0.1";
 
     // Create a socket
     client_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (client_socket < 0) {
         perror("Error creating socket");
-        return;
+        return NULL;
     }
 
     // Set up the server address
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(server_port);
-    inet_pton(AF_INET, server_ip, &server_address.sin_addr);
+    inet_pton(AF_INET, IP_ADDRESS, &server_address.sin_addr);
 
     // Connect to the server
     if (connect(client_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
         perror("Error connecting to server");
         close(client_socket);
-        return;
+        return NULL;
     }
 
     // Receive data from the server
@@ -35,19 +34,14 @@ void connect_to_server() {
     }
 
     close(client_socket);
-}
 
-// Function for client thread (used when multiple clients are requested)
-void *client_thread(void *arg) {
-    connect_to_server();
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    // If no argument is passed, connect in single-threaded mode
-    if (argc == 1) {
-        printf("Connecting in single-threaded mode...\n");
-        connect_to_server();
+    // Check if number of clients is passed as argument
+    if (argc != 2) {
+        printf("Insufficient arguments. Usage: %s <num_clients>\n", argv[0]);
         return 0;
     }
 
