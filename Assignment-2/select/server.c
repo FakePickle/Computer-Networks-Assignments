@@ -23,6 +23,7 @@ static int compareCpu(const void *a, const void *b) {
 
 static void sendTopTwoProcesses(int clientSocket) {
     DIR *procDir = opendir("/proc");
+    printf("Sending top two processes\n");
     if (!procDir) {
         perror("Error opening /proc");
         return;
@@ -55,28 +56,37 @@ static void sendTopTwoProcesses(int clientSocket) {
         }
     }
 }
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
 
-static void *handleClient(void *arg) {
-    int clientSocket = *(int *)arg;
-    free(arg);
-
-    sendTopTwoProcesses(clientSocket);
-    close(clientSocket);
-    return NULL;
-}
+#define MAX_CLIENTS 1024  // Adjust based on system limits
 
 int main(void) {
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    int serverSocket, clientSocket, maxSd, activity;
+    struct sockaddr_in serverAddress;
+    fd_set readfds;
+    int clientSockets[MAX_CLIENTS] = {0};
+
+    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket < 0) {
         perror("Error creating socket");
         return EXIT_FAILURE;
     }
 
-    struct sockaddr_in serverAddress = {
-        .sin_family = AF_INET,
-        .sin_port = htons(SERVER_PORT),
-        .sin_addr.s_addr = INADDR_ANY
-    };
+    // Set socket to non-blocking
+    int flags = fcntl(serverSocket, F_GETFL, 0);
+    fcntl(serverSocket, F_SETFL, flags | O_NONBLOCK);
+
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_port = htons(SERVER_PORT);
 
     if (bind(serverSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0) {
         perror("Error binding socket");
@@ -84,7 +94,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    if (listen(serverSocket, MAX_PENDING_CONNECTIONS) < 0) {
+    if (listen(serverSocket, SOMAXCONN) < 0) {
         perror("Error listening for connections");
         close(serverSocket);
         return EXIT_FAILURE;
@@ -93,28 +103,58 @@ int main(void) {
     printf("Server listening on port %d...\n", SERVER_PORT);
 
     while (1) {
-        int *clientSocket = malloc(sizeof(int));
-        if (!clientSocket) {
-            perror("Memory allocation failed");
-            continue;
+        FD_ZERO(&readfds);
+        FD_SET(serverSocket, &readfds);
+        maxSd = serverSocket;
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            int sd = clientSockets[i];
+            if (sd > 0) {
+                FD_SET(sd, &readfds);
+            }
+            if (sd > maxSd) {
+                maxSd = sd;
+            }
         }
 
-        *clientSocket = accept(serverSocket, NULL, NULL);
-        if (*clientSocket < 0) {
-            perror("Error accepting connection");
-            free(clientSocket);
-            continue;
+        activity = select(maxSd + 1, &readfds, NULL, NULL, NULL);
+        if (activity < 0 && errno != EINTR) {
+            perror("select error");
+            break;
         }
 
-        pthread_t thread;
-        if (pthread_create(&thread, NULL, handleClient, clientSocket) != 0) {
-            perror("Error creating thread");
-            close(*clientSocket);
-            free(clientSocket);
-            continue;
+        if (FD_ISSET(serverSocket, &readfds)) {
+            clientSocket = accept(serverSocket, NULL, NULL);
+            if (clientSocket < 0) {
+                if (errno != EWOULDBLOCK) {
+                    perror("accept failed");
+                }
+                continue;
+            }
+
+            printf("New connection, socket fd is %d\n", clientSocket);
+
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clientSockets[i] == 0) {
+                    clientSockets[i] = clientSocket;
+                    break;
+                }
+            }
+
+            sendTopTwoProcesses(clientSocket);
         }
 
-        pthread_detach(thread);
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            int sd = clientSockets[i];
+            if (FD_ISSET(sd, &readfds)) {
+                char buffer[1024];
+                int valread = read(sd, buffer, sizeof(buffer));
+                if (valread == 0) {
+                    close(sd);
+                    clientSockets[i] = 0;
+                }
+            }
+        }
     }
 
     close(serverSocket);
